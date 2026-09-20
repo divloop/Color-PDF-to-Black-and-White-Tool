@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Offline PDF Note Cleaner</title>
+<style>
+  body { font-family: system-ui, sans-serif; background: #f1f5f9; padding: 24px; max-width: 1200px; margin: 0 auto; }
+  .panel { background: white; border-radius: 14px; padding: 22px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 28px; }
+  .row { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; }
+  button { background: #2563eb; color: white; border: none; padding: 11px 22px; border-radius: 9px; font-size: 0.95rem; cursor: pointer; }
+  button:disabled { background: #94a3b8; cursor: not-allowed; }
+  .secondary { background: #475569; }
+  #status { font-size: 0.95rem; color: #475569; margin-left: 10px; }
+  .error { color: #dc2626; font-weight: 500; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 20px; }
+  .card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
+  .card img { width: 100%; display: block; }
+  .card-footer { padding: 12px 14px; display: flex; justify-content: space-between; align-items: center; font-size: 0.85rem; }
+</style>
+</head>
+<body>
+
+<h1>Offline PDF Note Cleaner</h1>
+<p>Upload any PDF → pure white background + pure black text</p>
+
+<div class="panel">
+  <div class="row">
+    <input type="file" id="pdfInput" accept="application/pdf">
+    <label>Threshold <input type="range" id="threshold" min="30" max="180" value="90"> <span id="thVal">90</span></label>
+    <button id="processBtn" disabled>Process PDF</button>
+    <button id="downloadAllBtn" class="secondary" disabled>Download All Pages</button>
+    <span id="status">Waiting for PDF…</span>
+  </div>
+</div>
+
+<div class="grid" id="results"></div>
+
+<script type="module">
+  import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.3.289/build/pdf.mjs';
+  pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.3.289/build/pdf.worker.mjs';
+
+  const pdfInput = document.getElementById('pdfInput');
+  const processBtn = document.getElementById('processBtn');
+  const downloadAll = document.getElementById('downloadAllBtn');
+  const thresholdEl = document.getElementById('threshold');
+  const thVal = document.getElementById('thVal');
+  const statusEl = document.getElementById('status');
+  const results = document.getElementById('results');
+
+  let cleanedCanvases = [];
+  let pdfDoc = null;
+
+  thresholdEl.oninput = () => thVal.textContent = thresholdEl.value;
+
+  pdfInput.addEventListener('change', async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+
+    statusEl.textContent = 'Loading PDF…';
+    processBtn.disabled = true;
+    downloadAll.disabled = true;
+    results.innerHTML = '';
+    cleanedCanvases = [];
+
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+      statusEl.textContent = `PDF loaded – ${pdfDoc.numPages} page(s) ready`;
+      processBtn.disabled = false;
+    } catch (err) {
+      console.error(err);
+      statusEl.innerHTML = `<span class="error">Error: ${err.message}</span>`;
+    }
+  });
+
+  processBtn.addEventListener('click', async () => {
+    if (!pdfDoc) return;
+    processBtn.disabled = true;
+    downloadAll.disabled = true;
+    results.innerHTML = '';
+    cleanedCanvases = [];
+    const thresh = +thresholdEl.value;
+
+    try {
+      for (let i = 1; i <= pdfDoc.numPages; i++) {
+        statusEl.textContent = `Processing page ${i} of ${pdfDoc.numPages}…`;
+        const page = await pdfDoc.getPage(i);
+        const viewport = page.getViewport({ scale: 2.0 });
+        const canvas = document.createElement('canvas');
+        canvas.width = viewport.width;
+        canvas.height = viewport.height;
+        const ctx = canvas.getContext('2d');
+        await page.render({ canvasContext: ctx, viewport }).promise;
+
+        let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        let data = imageData.data;
+
+        // 1. Invert → White background + Black text
+        for (let p = 0; p < data.length; p += 4) {
+          const lum = 0.299 * data[p] + 0.587 * data[p+1] + 0.114 * data[p+2];
+          const v = lum < thresh ? 255 : 0;
+          data[p] = data[p+1] = data[p+2] = v;
+        }
+        ctx.putImageData(imageData, 0, 0);
+
+        // 2. Strong Auto-crop
+        imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+        data = imageData.data;
+        const w = canvas.width;
+        const h = canvas.height;
+
+        function isMostlyBlack(isRow, index, limit = 0.97) {
+          let black = 0;
+          const total = isRow ? w : h;
+          for (let j = 0; j < total; j++) {
+            const x = isRow ? j : index;
+            const y = isRow ? index : j;
+            const idx = (y * w + x) * 4;
+            if (data[idx] < 40) black++;
+          }
+          return (black / total) > limit;
+        }
+
+        let top = 0;
+        while (top < h - 20 && isMostlyBlack(true, top)) top++;
+
+        let bottom = h - 1;
+        while (bottom > top + 20 && isMostlyBlack(true, bottom)) bottom--;
+
+        let left = 0;
+        while (left < w - 20 && isMostlyBlack(false, left)) left++;
+
+        let right = w - 1;
+        while (right > left + 20 && isMostlyBlack(false, right)) right--;
+
+        // Extra aggressive crop for thin remaining border
+        top += 8;
+        left += 8;
+        bottom -= 8;
+        right -= 8;
+
+        top = Math.max(0, top);
+        left = Math.max(0, left);
+        bottom = Math.min(h - 1, bottom);
+        right = Math.min(w - 1, right);
+
+        const cropW = right - left + 1;
+        const cropH = bottom - top + 1;
+
+        const cropped = document.createElement('canvas');
+        cropped.width = cropW;
+        cropped.height = cropH;
+        const cctx = cropped.getContext('2d');
+        cctx.fillStyle = '#ffffff';
+        cctx.fillRect(0, 0, cropW, cropH);
+        cctx.drawImage(canvas, left, top, cropW, cropH, 0, 0, cropW, cropH);
+
+        // 3. Final clean – force outer 6 pixels to pure white
+        const finalData = cctx.getImageData(0, 0, cropW, cropH);
+        const fd = finalData.data;
+        const clean = 6;
+
+        for (let y = 0; y < cropH; y++) {
+          for (let x = 0; x < cropW; x++) {
+            if (x < clean || x >= cropW - clean || y < clean || y >= cropH - clean) {
+              const idx = (y * cropW + x) * 4;
+              fd[idx] = fd[idx+1] = fd[idx+2] = 255;
+            }
+          }
+        }
+        cctx.putImageData(finalData, 0, 0);
+
+        cleanedCanvases.push(cropped);
+
+        // Preview
+        const card = document.createElement('div');
+        card.className = 'card';
+        const img = document.createElement('img');
+        img.src = cropped.toDataURL('image/png');
+        const footer = document.createElement('div');
+        footer.className = 'card-footer';
+        footer.innerHTML = `<span>Page ${i}</span>`;
+        const btn = document.createElement('button');
+        btn.textContent = 'Download';
+        btn.onclick = () => {
+          const a = document.createElement('a');
+          a.href = cropped.toDataURL('image/png');
+          a.download = `cleaned-page-${String(i).padStart(2,'0')}.png`;
+          a.click();
+        };
+        footer.appendChild(btn);
+        card.appendChild(img);
+        card.appendChild(footer);
+        results.appendChild(card);
+      }
+
+      statusEl.textContent = `Finished – ${pdfDoc.numPages} pages cleaned`;
+      downloadAll.disabled = false;
+    } catch (err) {
+      console.error(err);
+      statusEl.innerHTML = `<span class="error">Error: ${err.message}</span>`;
+    }
+    processBtn.disabled = false;
+  });
+
+  downloadAll.addEventListener('click', () => {
+    cleanedCanvases.forEach((c, i) => {
+      setTimeout(() => {
+        const a = document.createElement('a');
+        a.href = c.toDataURL('image/png');
+        a.download = `cleaned-page-${String(i+1).padStart(2,'0')}.png`;
+        a.click();
+      }, i * 400);
+    });
+  });
+</script>
+</body>
+</html>
