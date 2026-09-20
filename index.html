@@ -15,6 +15,9 @@
     max-width: 1200px;
     margin: 0 auto;
     line-height: 1.4;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
   }
 
   h1 {
@@ -70,7 +73,7 @@
     font-size: 0.95rem;
     font-weight: 500;
     cursor: pointer;
-    min-height: 44px; /* better for touch */
+    min-height: 44px;
   }
 
   button:disabled {
@@ -94,6 +97,7 @@
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: 16px;
+    flex: 1;
   }
 
   .card {
@@ -121,6 +125,27 @@
     padding: 8px 14px;
     font-size: 0.85rem;
     min-height: 38px;
+  }
+
+  /* Footer */
+  .footer {
+    text-align: center;
+    padding: 28px 10px 12px;
+    color: #64748b;
+    font-size: 0.95rem;
+    margin-top: auto;
+  }
+
+  .footer .heart {
+    color: #e11d48;
+    font-size: 1.15rem;
+    display: inline-block;
+    animation: pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.25); }
   }
 
   /* ===== Mobile improvements ===== */
@@ -199,6 +224,10 @@
 </div>
 
 <div class="grid" id="results"></div>
+
+<div class="footer">
+  Made with <span class="heart">❤️</span> in India
+</div>
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script type="module">
