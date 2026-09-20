@@ -6,11 +6,12 @@
 <style>
   body { font-family: system-ui, sans-serif; background: #f1f5f9; padding: 24px; max-width: 1200px; margin: 0 auto; }
   .panel { background: white; border-radius: 14px; padding: 22px; box-shadow: 0 4px 12px rgba(0,0,0,0.05); margin-bottom: 28px; }
-  .row { display: flex; flex-wrap: wrap; gap: 18px; align-items: center; }
-  button { background: #2563eb; color: white; border: none; padding: 11px 22px; border-radius: 9px; font-size: 0.95rem; cursor: pointer; }
+  .row { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+  button { background: #2563eb; color: white; border: none; padding: 11px 20px; border-radius: 9px; font-size: 0.95rem; cursor: pointer; }
   button:disabled { background: #94a3b8; cursor: not-allowed; }
   .secondary { background: #475569; }
-  #status { font-size: 0.95rem; color: #475569; margin-left: 10px; }
+  .success { background: #16a34a; }
+  #status { font-size: 0.95rem; color: #475569; margin-left: 8px; }
   .error { color: #dc2626; font-weight: 500; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 20px; }
   .card { background: white; border-radius: 12px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.06); }
@@ -29,19 +30,24 @@
     <label>Threshold <input type="range" id="threshold" min="30" max="180" value="90"> <span id="thVal">90</span></label>
     <button id="processBtn" disabled>Process PDF</button>
     <button id="downloadAllBtn" class="secondary" disabled>Download All Pages</button>
+    <button id="downloadPdfBtn" class="success" disabled>Download as PDF</button>
     <span id="status">Waiting for PDF…</span>
   </div>
 </div>
 
 <div class="grid" id="results"></div>
 
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
 <script type="module">
   import * as pdfjsLib from 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.3.289/build/pdf.mjs';
   pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@6.3.289/build/pdf.worker.mjs';
 
+  const { jsPDF } = window.jspdf;
+
   const pdfInput = document.getElementById('pdfInput');
   const processBtn = document.getElementById('processBtn');
   const downloadAll = document.getElementById('downloadAllBtn');
+  const downloadPdfBtn = document.getElementById('downloadPdfBtn');
   const thresholdEl = document.getElementById('threshold');
   const thVal = document.getElementById('thVal');
   const statusEl = document.getElementById('status');
@@ -59,6 +65,7 @@
     statusEl.textContent = 'Loading PDF…';
     processBtn.disabled = true;
     downloadAll.disabled = true;
+    downloadPdfBtn.disabled = true;
     results.innerHTML = '';
     cleanedCanvases = [];
 
@@ -77,6 +84,7 @@
     if (!pdfDoc) return;
     processBtn.disabled = true;
     downloadAll.disabled = true;
+    downloadPdfBtn.disabled = true;
     results.innerHTML = '';
     cleanedCanvases = [];
     const thresh = +thresholdEl.value;
@@ -95,7 +103,7 @@
         let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         let data = imageData.data;
 
-        // 1. Invert → White background + Black text
+        // Invert → White background + Black text
         for (let p = 0; p < data.length; p += 4) {
           const lum = 0.299 * data[p] + 0.587 * data[p+1] + 0.114 * data[p+2];
           const v = lum < thresh ? 255 : 0;
@@ -103,7 +111,7 @@
         }
         ctx.putImageData(imageData, 0, 0);
 
-        // 2. Strong Auto-crop
+        // Strong Auto-crop
         imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
         data = imageData.data;
         const w = canvas.width;
@@ -123,22 +131,14 @@
 
         let top = 0;
         while (top < h - 20 && isMostlyBlack(true, top)) top++;
-
         let bottom = h - 1;
         while (bottom > top + 20 && isMostlyBlack(true, bottom)) bottom--;
-
         let left = 0;
         while (left < w - 20 && isMostlyBlack(false, left)) left++;
-
         let right = w - 1;
         while (right > left + 20 && isMostlyBlack(false, right)) right--;
 
-        // Extra aggressive crop for thin remaining border
-        top += 8;
-        left += 8;
-        bottom -= 8;
-        right -= 8;
-
+        top += 8; left += 8; bottom -= 8; right -= 8;
         top = Math.max(0, top);
         left = Math.max(0, left);
         bottom = Math.min(h - 1, bottom);
@@ -155,11 +155,10 @@
         cctx.fillRect(0, 0, cropW, cropH);
         cctx.drawImage(canvas, left, top, cropW, cropH, 0, 0, cropW, cropH);
 
-        // 3. Final clean – force outer 6 pixels to pure white
+        // Final clean outer edges
         const finalData = cctx.getImageData(0, 0, cropW, cropH);
         const fd = finalData.data;
         const clean = 6;
-
         for (let y = 0; y < cropH; y++) {
           for (let x = 0; x < cropW; x++) {
             if (x < clean || x >= cropW - clean || y < clean || y >= cropH - clean) {
@@ -172,7 +171,7 @@
 
         cleanedCanvases.push(cropped);
 
-        // Preview
+        // Preview card
         const card = document.createElement('div');
         card.className = 'card';
         const img = document.createElement('img');
@@ -196,6 +195,7 @@
 
       statusEl.textContent = `Finished – ${pdfDoc.numPages} pages cleaned`;
       downloadAll.disabled = false;
+      downloadPdfBtn.disabled = false;
     } catch (err) {
       console.error(err);
       statusEl.innerHTML = `<span class="error">Error: ${err.message}</span>`;
@@ -203,6 +203,7 @@
     processBtn.disabled = false;
   });
 
+  // Download all pages as PNG
   downloadAll.addEventListener('click', () => {
     cleanedCanvases.forEach((c, i) => {
       setTimeout(() => {
@@ -212,6 +213,43 @@
         a.click();
       }, i * 400);
     });
+  });
+
+  // Download all pages as single PDF
+  downloadPdfBtn.addEventListener('click', () => {
+    if (cleanedCanvases.length === 0) return;
+
+    statusEl.textContent = 'Creating PDF…';
+    const pdf = new jsPDF({
+      orientation: 'portrait',
+      unit: 'mm',
+      format: 'a4'
+    });
+
+    cleanedCanvases.forEach((canvas, index) => {
+      const imgData = canvas.toDataURL('image/jpeg', 0.92);
+
+      const pageWidth = pdf.internal.pageSize.getWidth();
+      const pageHeight = pdf.internal.pageSize.getHeight();
+
+      // Calculate size to fit page with small margin
+      const margin = 8;
+      const maxWidth = pageWidth - margin * 2;
+      const maxHeight = pageHeight - margin * 2;
+
+      const ratio = Math.min(maxWidth / canvas.width, maxHeight / canvas.height);
+      const imgWidth = canvas.width * ratio;
+      const imgHeight = canvas.height * ratio;
+
+      const x = (pageWidth - imgWidth) / 2;
+      const y = (pageHeight - imgHeight) / 2;
+
+      if (index > 0) pdf.addPage();
+      pdf.addImage(imgData, 'JPEG', x, y, imgWidth, imgHeight);
+    });
+
+    pdf.save('cleaned-notes.pdf');
+    statusEl.textContent = `Finished – ${cleanedCanvases.length} pages cleaned`;
   });
 </script>
 </body>
