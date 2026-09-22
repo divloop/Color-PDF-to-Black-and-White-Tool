@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
-<title>Offline PDF Note Cleaner</title>
+<title>Offline PDF & Image Note Cleaner</title>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   
@@ -127,7 +127,6 @@
     min-height: 38px;
   }
 
-  /* Footer */
   .footer {
     text-align: center;
     padding: 28px 10px 12px;
@@ -148,52 +147,41 @@
     50% { transform: scale(1.25); }
   }
 
-  /* ===== Mobile improvements ===== */
   @media (max-width: 640px) {
     body { padding: 12px; }
-    
     h1 { font-size: 1.35rem; }
-    
     .panel { padding: 14px; }
-    
     .row {
       flex-direction: column;
       align-items: stretch;
       gap: 10px;
     }
-    
     label {
       justify-content: space-between;
       width: 100%;
     }
-    
     input[type="range"] {
       width: 100%;
       max-width: 220px;
     }
-    
     button {
       width: 100%;
       padding: 14px;
       font-size: 1rem;
     }
-    
     #status {
       text-align: center;
       margin-top: 6px;
     }
-    
     .grid {
       grid-template-columns: 1fr;
       gap: 14px;
     }
-    
     .card-footer {
       flex-direction: column;
       gap: 10px;
       align-items: stretch;
     }
-    
     .card-footer button {
       width: 100%;
     }
@@ -202,12 +190,12 @@
 </head>
 <body>
 
-<h1>Offline PDF Note Cleaner</h1>
-<p class="sub">Upload any PDF → pure white background + pure black text</p>
+<h1>Offline PDF & Image Note Cleaner</h1>
+<p class="sub">Upload PDF or Images → pure white background + pure black text</p>
 
 <div class="panel">
   <div class="row">
-    <input type="file" id="pdfInput" accept="application/pdf">
+    <input type="file" id="fileInput" accept="application/pdf,image/*" multiple>
     
     <label>
       Threshold
@@ -215,11 +203,11 @@
       <span id="thVal">90</span>
     </label>
 
-    <button id="processBtn" disabled>Process PDF</button>
+    <button id="processBtn" disabled>Process</button>
     <button id="downloadAllBtn" class="secondary" disabled>Download All Pages</button>
     <button id="downloadPdfBtn" class="success" disabled>Download as PDF</button>
     
-    <span id="status">Waiting for PDF…</span>
+    <span id="status">Waiting for files…</span>
   </div>
 </div>
 
@@ -236,7 +224,7 @@
 
   const { jsPDF } = window.jspdf;
 
-  const pdfInput = document.getElementById('pdfInput');
+  const fileInput = document.getElementById('fileInput');
   const processBtn = document.getElementById('processBtn');
   const downloadAll = document.getElementById('downloadAllBtn');
   const downloadPdfBtn = document.getElementById('downloadPdfBtn');
@@ -246,34 +234,143 @@
   const results = document.getElementById('results');
 
   let cleanedCanvases = [];
-  let pdfDoc = null;
+  let filesToProcess = [];
 
   thresholdEl.oninput = () => thVal.textContent = thresholdEl.value;
 
-  pdfInput.addEventListener('change', async (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
+  fileInput.addEventListener('change', (e) => {
+    const files = Array.from(e.target.files || []);
+    if (files.length === 0) return;
 
-    statusEl.textContent = 'Loading PDF…';
-    processBtn.disabled = true;
+    filesToProcess = files;
+    cleanedCanvases = [];
+    results.innerHTML = '';
     downloadAll.disabled = true;
     downloadPdfBtn.disabled = true;
-    results.innerHTML = '';
-    cleanedCanvases = [];
 
-    try {
-      const arrayBuffer = await file.arrayBuffer();
-      pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
-      statusEl.textContent = `PDF loaded – ${pdfDoc.numPages} page(s) ready`;
-      processBtn.disabled = false;
-    } catch (err) {
-      console.error(err);
-      statusEl.innerHTML = `<span class="error">Error: ${err.message}</span>`;
+    const hasPdf = files.some(f => f.type === 'application/pdf');
+    const hasImages = files.some(f => f.type.startsWith('image/'));
+
+    if (hasPdf && hasImages) {
+      statusEl.innerHTML = `<span class="error">Please upload either PDF or Images, not both together</span>`;
+      processBtn.disabled = true;
+      return;
     }
+
+    if (hasPdf) {
+      statusEl.textContent = `PDF selected – ${files[0].name}`;
+    } else {
+      statusEl.textContent = `${files.length} image(s) selected`;
+    }
+    processBtn.disabled = false;
   });
 
+  // ========== Shared cleaning function ==========
+  async function cleanCanvas(sourceCanvas, thresh) {
+    const canvas = document.createElement('canvas');
+    canvas.width = sourceCanvas.width;
+    canvas.height = sourceCanvas.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(sourceCanvas, 0, 0);
+
+    let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    let data = imageData.data;
+
+    // Invert → White background + Black text
+    for (let p = 0; p < data.length; p += 4) {
+      const lum = 0.299 * data[p] + 0.587 * data[p+1] + 0.114 * data[p+2];
+      const v = lum < thresh ? 255 : 0;
+      data[p] = data[p+1] = data[p+2] = v;
+    }
+    ctx.putImageData(imageData, 0, 0);
+
+    // Strong Auto-crop
+    imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    data = imageData.data;
+    const w = canvas.width;
+    const h = canvas.height;
+
+    function isMostlyBlack(isRow, index, limit = 0.97) {
+      let black = 0;
+      const total = isRow ? w : h;
+      for (let j = 0; j < total; j++) {
+        const x = isRow ? j : index;
+        const y = isRow ? index : j;
+        const idx = (y * w + x) * 4;
+        if (data[idx] < 40) black++;
+      }
+      return (black / total) > limit;
+    }
+
+    let top = 0;
+    while (top < h - 20 && isMostlyBlack(true, top)) top++;
+    let bottom = h - 1;
+    while (bottom > top + 20 && isMostlyBlack(true, bottom)) bottom--;
+    let left = 0;
+    while (left < w - 20 && isMostlyBlack(false, left)) left++;
+    let right = w - 1;
+    while (right > left + 20 && isMostlyBlack(false, right)) right--;
+
+    top += 8; left += 8; bottom -= 8; right -= 8;
+    top = Math.max(0, top);
+    left = Math.max(0, left);
+    bottom = Math.min(h - 1, bottom);
+    right = Math.min(w - 1, right);
+
+    const cropW = right - left + 1;
+    const cropH = bottom - top + 1;
+
+    const cropped = document.createElement('canvas');
+    cropped.width = cropW;
+    cropped.height = cropH;
+    const cctx = cropped.getContext('2d');
+    cctx.fillStyle = '#ffffff';
+    cctx.fillRect(0, 0, cropW, cropH);
+    cctx.drawImage(canvas, left, top, cropW, cropH, 0, 0, cropW, cropH);
+
+    // Final clean outer edges
+    const finalData = cctx.getImageData(0, 0, cropW, cropH);
+    const fd = finalData.data;
+    const clean = 6;
+    for (let y = 0; y < cropH; y++) {
+      for (let x = 0; x < cropW; x++) {
+        if (x < clean || x >= cropW - clean || y < clean || y >= cropH - clean) {
+          const idx = (y * cropW + x) * 4;
+          fd[idx] = fd[idx+1] = fd[idx+2] = 255;
+        }
+      }
+    }
+    cctx.putImageData(finalData, 0, 0);
+
+    return cropped;
+  }
+
+  function addPreviewCard(canvas, index) {
+    const card = document.createElement('div');
+    card.className = 'card';
+    const img = document.createElement('img');
+    img.src = canvas.toDataURL('image/png');
+    const footer = document.createElement('div');
+    footer.className = 'card-footer';
+    footer.innerHTML = `<span>Page ${index + 1}</span>`;
+    const btn = document.createElement('button');
+    btn.textContent = 'Download';
+    btn.onclick = () => {
+      const a = document.createElement('a');
+      a.href = canvas.toDataURL('image/png');
+      a.download = `cleaned-page-${String(index + 1).padStart(2,'0')}.png`;
+      a.click();
+    };
+    footer.appendChild(btn);
+    card.appendChild(img);
+    card.appendChild(footer);
+    results.appendChild(card);
+  }
+
+  // ========== Main Process ==========
   processBtn.addEventListener('click', async () => {
-    if (!pdfDoc) return;
+    if (filesToProcess.length === 0) return;
+
     processBtn.disabled = true;
     downloadAll.disabled = true;
     downloadPdfBtn.disabled = true;
@@ -282,130 +379,86 @@
     const thresh = +thresholdEl.value;
 
     try {
-      for (let i = 1; i <= pdfDoc.numPages; i++) {
-        statusEl.textContent = `Processing page ${i} of ${pdfDoc.numPages}…`;
-        const page = await pdfDoc.getPage(i);
-        const viewport = page.getViewport({ scale: 2.0 });
-        const canvas = document.createElement('canvas');
-        canvas.width = viewport.width;
-        canvas.height = viewport.height;
-        const ctx = canvas.getContext('2d');
-        await page.render({ canvasContext: ctx, viewport }).promise;
+      const isPdf = filesToProcess[0].type === 'application/pdf';
 
-        let imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        let data = imageData.data;
+      if (isPdf) {
+        // ===== PDF Mode =====
+        statusEl.textContent = 'Loading PDF…';
+        const arrayBuffer = await filesToProcess[0].arrayBuffer();
+        const pdfDoc = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
 
-        // Invert → White background + Black text
-        for (let p = 0; p < data.length; p += 4) {
-          const lum = 0.299 * data[p] + 0.587 * data[p+1] + 0.114 * data[p+2];
-          const v = lum < thresh ? 255 : 0;
-          data[p] = data[p+1] = data[p+2] = v;
+        for (let i = 1; i <= pdfDoc.numPages; i++) {
+          statusEl.textContent = `Processing page ${i} of ${pdfDoc.numPages}…`;
+          const page = await pdfDoc.getPage(i);
+          const viewport = page.getViewport({ scale: 2.0 });
+          const canvas = document.createElement('canvas');
+          canvas.width = viewport.width;
+          canvas.height = viewport.height;
+          const ctx = canvas.getContext('2d');
+          await page.render({ canvasContext: ctx, viewport }).promise;
+
+          const cleaned = await cleanCanvas(canvas, thresh);
+          cleanedCanvases.push(cleaned);
+          addPreviewCard(cleaned, i - 1);
         }
-        ctx.putImageData(imageData, 0, 0);
+      } else {
+        // ===== Image Mode =====
+        for (let i = 0; i < filesToProcess.length; i++) {
+          statusEl.textContent = `Processing image ${i + 1} of ${filesToProcess.length}…`;
+          const file = filesToProcess[i];
 
-        // Strong Auto-crop
-        imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-        data = imageData.data;
-        const w = canvas.width;
-        const h = canvas.height;
+          const img = new Image();
+          const url = URL.createObjectURL(file);
 
-        function isMostlyBlack(isRow, index, limit = 0.97) {
-          let black = 0;
-          const total = isRow ? w : h;
-          for (let j = 0; j < total; j++) {
-            const x = isRow ? j : index;
-            const y = isRow ? index : j;
-            const idx = (y * w + x) * 4;
-            if (data[idx] < 40) black++;
+          await new Promise((resolve, reject) => {
+            img.onload = resolve;
+            img.onerror = reject;
+            img.src = url;
+          });
+
+          const canvas = document.createElement('canvas');
+          // Limit very large images for performance
+          const maxSize = 2000;
+          let scale = 1;
+          if (img.width > maxSize || img.height > maxSize) {
+            scale = maxSize / Math.max(img.width, img.height);
           }
-          return (black / total) > limit;
+          canvas.width = img.width * scale;
+          canvas.height = img.height * scale;
+          const ctx = canvas.getContext('2d');
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+          URL.revokeObjectURL(url);
+
+          const cleaned = await cleanCanvas(canvas, thresh);
+          cleanedCanvases.push(cleaned);
+          addPreviewCard(cleaned, i);
         }
-
-        let top = 0;
-        while (top < h - 20 && isMostlyBlack(true, top)) top++;
-        let bottom = h - 1;
-        while (bottom > top + 20 && isMostlyBlack(true, bottom)) bottom--;
-        let left = 0;
-        while (left < w - 20 && isMostlyBlack(false, left)) left++;
-        let right = w - 1;
-        while (right > left + 20 && isMostlyBlack(false, right)) right--;
-
-        top += 8; left += 8; bottom -= 8; right -= 8;
-        top = Math.max(0, top);
-        left = Math.max(0, left);
-        bottom = Math.min(h - 1, bottom);
-        right = Math.min(w - 1, right);
-
-        const cropW = right - left + 1;
-        const cropH = bottom - top + 1;
-
-        const cropped = document.createElement('canvas');
-        cropped.width = cropW;
-        cropped.height = cropH;
-        const cctx = cropped.getContext('2d');
-        cctx.fillStyle = '#ffffff';
-        cctx.fillRect(0, 0, cropW, cropH);
-        cctx.drawImage(canvas, left, top, cropW, cropH, 0, 0, cropW, cropH);
-
-        // Final clean outer edges
-        const finalData = cctx.getImageData(0, 0, cropW, cropH);
-        const fd = finalData.data;
-        const clean = 6;
-        for (let y = 0; y < cropH; y++) {
-          for (let x = 0; x < cropW; x++) {
-            if (x < clean || x >= cropW - clean || y < clean || y >= cropH - clean) {
-              const idx = (y * cropW + x) * 4;
-              fd[idx] = fd[idx+1] = fd[idx+2] = 255;
-            }
-          }
-        }
-        cctx.putImageData(finalData, 0, 0);
-
-        cleanedCanvases.push(cropped);
-
-        // Preview card
-        const card = document.createElement('div');
-        card.className = 'card';
-        const img = document.createElement('img');
-        img.src = cropped.toDataURL('image/png');
-        const footer = document.createElement('div');
-        footer.className = 'card-footer';
-        footer.innerHTML = `<span>Page ${i}</span>`;
-        const btn = document.createElement('button');
-        btn.textContent = 'Download';
-        btn.onclick = () => {
-          const a = document.createElement('a');
-          a.href = cropped.toDataURL('image/png');
-          a.download = `cleaned-page-${String(i).padStart(2,'0')}.png`;
-          a.click();
-        };
-        footer.appendChild(btn);
-        card.appendChild(img);
-        card.appendChild(footer);
-        results.appendChild(card);
       }
 
-      statusEl.textContent = `Finished – ${pdfDoc.numPages} pages cleaned`;
+      statusEl.textContent = `Finished – ${cleanedCanvases.length} page(s) cleaned`;
       downloadAll.disabled = false;
       downloadPdfBtn.disabled = false;
     } catch (err) {
       console.error(err);
       statusEl.innerHTML = `<span class="error">Error: ${err.message}</span>`;
     }
+
     processBtn.disabled = false;
   });
 
+  // Download all as PNG
   downloadAll.addEventListener('click', () => {
     cleanedCanvases.forEach((c, i) => {
       setTimeout(() => {
         const a = document.createElement('a');
         a.href = c.toDataURL('image/png');
-        a.download = `cleaned-page-${String(i+1).padStart(2,'0')}.png`;
+        a.download = `cleaned-page-${String(i + 1).padStart(2,'0')}.png`;
         a.click();
       }, i * 400);
     });
   });
 
+  // Download as single PDF
   downloadPdfBtn.addEventListener('click', () => {
     if (cleanedCanvases.length === 0) return;
 
@@ -434,7 +487,7 @@
     });
 
     pdf.save('cleaned-notes.pdf');
-    statusEl.textContent = `Finished – ${cleanedCanvases.length} pages cleaned`;
+    statusEl.textContent = `Finished – ${cleanedCanvases.length} page(s) cleaned`;
   });
 </script>
 </body>
